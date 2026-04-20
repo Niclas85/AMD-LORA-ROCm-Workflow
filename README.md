@@ -1,120 +1,95 @@
-# 🚀 AMD ROCm LoRA Workflow: Deep Dive Guide
+# 🚀 AMD ROCm 7.0 + SimpleTuner LoRA Workflow
 
-Diese Anleitung beschreibt den ultimativen Workflow für LoRA-Training und Medien-Generierung auf AMD-Hardware (speziell optimiert für **AMD Strix Halo / Ryzen AI Max 395** mit 128GB Unified Memory).
+Diese Anleitung beschreibt den exakten Workflow für das Training von Flux.2-dev LoRAs mit **SimpleTuner** auf **ROCm 7.0**. Optimiert für High-End AMD Hardware wie den **Ryzen AI Max 395 (Strix Halo)**.
 
 ---
 
-## 🛠 1. Hardware & BIOS (Das Fundament)
+## 🛠 1. Hardware & ROCm 7.0 Setup
 
-Damit Flux.2-dev (ein 32B Parameter Modell) stabil trainiert, ist der VRAM-Flaschenhals entscheidend.
+### VRAM & BIOS
+- **Zuweisung**: 96GB bis 112GB fixer UMA VRAM im BIOS.
+- **GRUB**: `amdgpu.no_system_mem_limit=1` muss aktiv sein.
 
-### BIOS-Einstellungen (APU)
-- **UMA Framebuffer Size**: Setze diesen Wert auf **96GB** oder **112GB**.
-- **Wichtig**: Nutze **KEIN "Auto"**, da die dynamische Zuweisung unter Linux/ROCm oft zu Crashes führt. Ein fester Wert garantiert, dass PyTorch den Speicher als "Dedicated VRAM" sieht.
-
-### OS Tuning (GRUB)
-AMD Treiber brauchen oft Zugriff auf den gesamten Systemspeicher ohne künstliche Limits:
+### Installation ROCm 7.0
+ROCm 7 bietet verbesserte Unterstützung für die gfx1151 Architektur.
 ```bash
-# /etc/default/grub anpassen
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash amdgpu.no_system_mem_limit=1"
-sudo update-grub
-sudo reboot
+bash scripts/install_rocm7.sh
 ```
 
 ---
 
-## 🏗 2. Die Tool-Stack
+## 🏗 2. SimpleTuner Installation
 
-In diesem Workflow nutzen wir folgende Profi-Tools:
-1. **Training**: [AI-Toolkit (by Ostris)](https://github.com/ostris/ai-toolkit) - Aktuell das stabilste Tool für Flux-LoRAs.
-2. **Bild-Inference**: [Wan2GP](https://github.com/DeepBeepMeep/Wan2GP) - Optimiert für AMD/ROCm (nutzt GGUF/Quanto Quantisierung).
-3. **Video-Inference**: **Wan 2.2 (14B)** - Aktueller State-of-the-Art für Image-to-Video.
-4. **Backend**: **ROCm 6.1.x** - Die AMD-Entsprechung zu Nvidias CUDA.
+SimpleTuner ist das leistungsfähigste Tool für Multi-GPU und APU Training von Flux Modellen.
+
+```bash
+bash scripts/install_simpletuner.sh
+```
 
 ---
 
-## 🧬 3. GPU Erzwingen (Der AMD-Secret-Hack)
+## 🧬 3. GPU Erzwingen beim Training
 
-Die Hardware (gfx1151 / Strix Halo) ist oft so neu, dass Software sie nicht erkennt. Wir "täuschen" PyTorch vor, es handele sich um eine bekannte Architektur.
+SimpleTuner muss explizit angewiesen werden, die Hardware-ID zu überschreiben, da ROCm 7 die Strix Halo APU (gfx1151) zwar unterstützt, viele Bibliotheken aber noch auf gfx1100-Pfaden laufen.
 
-### Die magischen Variablen:
-Diese müssen **VOR** dem Start eines Trainings oder einer Generierung exportiert werden:
-
+**Diese Variablen sind Pflicht:**
 ```bash
-# Maskiert die APU als gfx1151 (Strix Halo Architektur)
 export HSA_OVERRIDE_GFX_VERSION=11.5.1
-
-# Erlaubt Zugriff auf Unified Memory (wichtig für APUs)
 export HSA_XNACK=1
-
-# Erzwingt, dass 100% der GPU-Zuweisung erlaubt sind
 export GPU_MAX_ALLOC_PERCENT=100
-
-# Aktiviert experimentelle Beschleunigung (AOTriton)
 export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
-
-# Schnellerer Suchmodus für GPU-Kernel
 export MIOPEN_FIND_MODE=FAST
 ```
 
 ---
 
-## 📥 4. Installation (Schritt für Schritt)
+## 🏋️ 4. LoRA Training mit SimpleTuner
 
-### ROCm 6.1 installieren
+### Konfiguration
+SimpleTuner nutzt eine `.env` Datei und ein JSON/YAML-Backend für Datensätze.
+
+1. **Datensatz**: Lege deine Bilder in `dataset/` ab.
+2. **Konfiguration**: Nutze die Vorlage in `config/simpletuner_flux.json`.
+
+### Training starten
 ```bash
-bash scripts/install_rocm.sh
-```
-
-### AI-Toolkit (Training) installieren
-```bash
-bash scripts/install_training.sh
-```
-*Hinweis: Das Skript installiert eine spezielle PyTorch-Version von den AMD-Servern.*
-
----
-
-## 🏋️ 5. LoRA Training (Flux.2-dev)
-
-### Datensatz vorbereiten
-Erstelle einen Ordner `dataset/` mit:
-- `bild1.jpg`, `bild1.txt` (Inhalt: "valentinamori, a woman...")
-- `bild2.jpg`, `bild2.txt` ...
-
-### Training-Config (`config/train_lora.yaml`)
-Entscheidende Parameter für AMD:
-- **optimizer: adamw8bit** (spart VRAM)
-- **dtype: bf16** (beste Präzision für Flux)
-- **gradient_checkpointing: true** (MUSS an sein, sonst VRAM-Overflow)
-
-### Startbefehl:
-```bash
-source ai-toolkit/venv/bin/activate
+source simpletuner/venv/bin/activate
+# Erzwinge GPU
 export HSA_OVERRIDE_GFX_VERSION=11.5.1
-python3 ai-toolkit/run.py config/train_lora.yaml
+# Starte SimpleTuner
+python train.py \
+  --model_type flux \
+  --model_name_or_path black-forest-labs/FLUX.1-dev \
+  --dataset_type multidataset \
+  --data_backend_config config/dataset.json \
+  --resolution 1024 \
+  --train_batch_size 1 \
+  --gradient_accumulation_steps 4 \
+  --max_train_steps 1500 \
+  --learning_rate 1e-4 \
+  --mixed_precision bf16 \
+  --gradient_checkpointing \
+  --output_dir output/valentina_lora
 ```
 
 ---
 
-## 🎬 6. Video-Generierung (Wan 2.2)
+## 🎬 5. Bild- & Video-Generierung
 
-Wan 2.2 ist ein extrem schweres Modell (14B Parameter). Auf der APU nutzen wir die **INT8-Quantisierung**.
-
-### Workflow:
-1. Erzeuge ein Startbild mit deinem neuen LoRA.
-2. Nutze das Video-Skript:
+### Bilder (Local Flux + LoRA)
 ```bash
-# Video aus Bild erzeugen (Image-to-Video)
-python3 scripts/generate_video.sh --start-image valentina_image.png --prompt "Valentina is smiling"
+python scripts/generate_image.py "valentinamori, a woman smiling"
+```
+
+### Videos (Wan 2.2 i2v)
+Nutze das Wan2GP Backend (Port 8188) oder das lokale Skript:
+```bash
+bash scripts/generate_video.sh --start-image output.png
 ```
 
 ---
 
-## 🚨 Troubleshooting
-
-| Fehler | Lösung |
-|---|---|
-| `HIP error: unspecified launch failure` | GPU-Takt oder VRAM überlastet. Reduziere Auflösung oder Batch Size. |
-| `Out of Memory (OOM)` | Prüfe ob `amdgpu.no_system_mem_limit=1` aktiv ist. |
-| `Illegal Instruction` | `HSA_OVERRIDE_GFX_VERSION` wurde nicht korrekt gesetzt. |
+## 🚨 Troubleshooting ROCm 7
+- **HIP Error**: Wenn das Training abstürzt, prüfe `rocm-smi`.
+- **Inkompatibilität**: Stelle sicher, dass `bitsandbytes` für ROCm korrekt installiert ist (in `install_simpletuner.sh` enthalten).
 
