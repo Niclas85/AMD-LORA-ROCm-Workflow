@@ -25,5 +25,5 @@ config:
         optimizer: "adamw8bit"
         dtype: bf16
       model:
-        name_or_path: "black-forest-labs/FLUX.1-dev"
+        name_or_path: "/home/niklaus/flux2-dev-local"
         is_flux: true

@@ -46,7 +46,7 @@ source simpletuner/venv/bin/activate
 
 python train.py \
   --model_type flux \
-  --model_name_or_path "black-forest-labs/FLUX.1-dev" \
+  --model_name_or_path "/home/niklaus/flux2-dev-local" \
   --dataset_type multidataset \
   --data_backend_config config/dataset.json \
   --resolution 1024 \
