@@ -93,3 +93,29 @@ bash scripts/generate_video.sh --start-image output.png
 - **HIP Error**: Wenn das Training abstürzt, prüfe `rocm-smi`.
 - **Inkompatibilität**: Stelle sicher, dass `bitsandbytes` für ROCm korrekt installiert ist (in `install_simpletuner.sh` enthalten).
 
+
+---
+
+## 🛠 7. Deep Technical Fixes (GPU-Force Details)
+
+Zusätzlich zu den Variablen wurden folgende Skript-Anpassungen vorgenommen:
+
+### A. Direct-to-GPU Sharding
+In `scripts/train_flux2_minimal.py` nutzen wir:
+```python
+# Lädt Shards direkt in den VRAM, um RAM-Doubling zu vermeiden
+shard_data = load_file(str(shard_path), device="cuda")
+```
+Dies ist kritisch für APUs, da der Linux-Kernel sonst versucht, den Speicher im RAM zu reservieren, bevor er ihn der GPU zuweist.
+
+### B. Bitsandbytes ROCm Link
+SimpleTuner benötigt 8-bit Optimizer. Falls dieser die GPU nicht findet:
+```bash
+# Manuelles Linking für ROCm 7
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/
+ln -s /usr/local/lib/python3.10/dist-packages/bitsandbytes/libbitsandbytes_rocm.so /usr/local/lib/python3.10/dist-packages/bitsandbytes/libbitsandbytes_cpu.so
+```
+*(Wird im `install_simpletuner.sh` Skript automatisch versucht).*
+
+### C. MMGP Tuning
+Für die Video-Generierung wurde in den Configs `perc_reserved_mem_max: 0.9` gesetzt. Dies verhindert das "Offloading" auf die CPU und hält das 14B Modell (Wan2.2) vollständig im 96GB/112GB VRAM-Bereich.
