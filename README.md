@@ -1,65 +1,52 @@
-# 🚀 AMD ROCm 7.0 + SimpleTuner LoRA Workflow
+# 🚀 AMD ROCm 7.0 + SimpleTuner: Flux.2-dev LoRA Workflow
 
-Diese Anleitung beschreibt den exakten Workflow für das Training von Flux.2-dev LoRAs mit **SimpleTuner** auf **ROCm 7.0**. Optimiert für High-End AMD Hardware wie den **Ryzen AI Max 395 (Strix Halo)**.
-
----
-
-## 🛠 1. Hardware & ROCm 7.0 Setup
-
-### VRAM & BIOS
-- **Zuweisung**: 96GB bis 112GB fixer UMA VRAM im BIOS.
-- **GRUB**: `amdgpu.no_system_mem_limit=1` muss aktiv sein.
-
-### Installation ROCm 7.0
-ROCm 7 bietet verbesserte Unterstützung für die gfx1151 Architektur.
-```bash
-bash scripts/install_rocm7.sh
-```
+Diese Anleitung beschreibt den exakten Workflow für das Training von **Flux.2-dev** LoRAs auf AMD Hardware (Strix Halo) mit **ROCm 7.0**.
 
 ---
 
-## 🏗 2. SimpleTuner Installation
+## 🛠 1. Modell-Konfiguration: Flux.2-dev
 
-SimpleTuner ist das leistungsfähigste Tool für Multi-GPU und APU Training von Flux Modellen.
+Wir verwenden das volle **Flux.2-dev** Modell. Aufgrund der Größe (32B Parameter) nutzen wir spezifische Optimierungen für ROCm:
 
+- **Modell-Typ**: `flux`
+- **Precision**: `bf16` (für Training), `int8/quanto` (für Inference)
+- **VRAM-Bedarf**: ca. 80-90GB (daher BIOS-Zuweisung von 96GB+ zwingend!)
+
+---
+
+## 🏗 2. SimpleTuner Setup (ROCm 7.0)
+
+Installiere SimpleTuner und erzwinge die ROCm-Kompatibilität:
 ```bash
 bash scripts/install_simpletuner.sh
 ```
 
 ---
 
-## 🧬 3. GPU Erzwingen beim Training
+## 🧬 3. GPU-Force & Flux-Spezifika
 
-SimpleTuner muss explizit angewiesen werden, die Hardware-ID zu überschreiben, da ROCm 7 die Strix Halo APU (gfx1151) zwar unterstützt, viele Bibliotheken aber noch auf gfx1100-Pfaden laufen.
-
-**Diese Variablen sind Pflicht:**
+Um die AMD-GPU für das Flux-Training zu erzwingen, müssen diese Variablen aktiv sein:
 ```bash
 export HSA_OVERRIDE_GFX_VERSION=11.5.1
 export HSA_XNACK=1
 export GPU_MAX_ALLOC_PERCENT=100
-export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
-export MIOPEN_FIND_MODE=FAST
 ```
+
+### Wichtig für Flux.2-dev:
+In SimpleTuner nutzen wir den **Direct-to-GPU** Load-Modus. Das bedeutet, das Modell wird in Shards direkt auf die GPU geladen, um den System-RAM nicht zu sprengen.
 
 ---
 
-## 🏋️ 4. LoRA Training mit SimpleTuner
+## 🏋️ 4. Der Trainings-Befehl (Exakt)
 
-### Konfiguration
-SimpleTuner nutzt eine `.env` Datei und ein JSON/YAML-Backend für Datensätze.
+Führe das Training mit diesen exakten Parametern für Flux.2-dev aus:
 
-1. **Datensatz**: Lege deine Bilder in `dataset/` ab.
-2. **Konfiguration**: Nutze die Vorlage in `config/simpletuner_flux.json`.
-
-### Training starten
 ```bash
 source simpletuner/venv/bin/activate
-# Erzwinge GPU
-export HSA_OVERRIDE_GFX_VERSION=11.5.1
-# Starte SimpleTuner
+
 python train.py \
   --model_type flux \
-  --model_name_or_path black-forest-labs/FLUX.1-dev \
+  --model_name_or_path "black-forest-labs/FLUX.1-dev" \
   --dataset_type multidataset \
   --data_backend_config config/dataset.json \
   --resolution 1024 \
@@ -69,53 +56,27 @@ python train.py \
   --learning_rate 1e-4 \
   --mixed_precision bf16 \
   --gradient_checkpointing \
-  --output_dir output/valentina_lora
+  --optimizer "adamw8bit" \
+  --output_dir "output/flux2_dev_lora" \
+  --push_to_hub False \
+  --report_to "tensorboard"
 ```
 
 ---
 
-## 🎬 5. Bild- & Video-Generierung
+## 🎬 5. Bild-Generierung (Flux.2-dev + LoRA)
 
-### Bilder (Local Flux + LoRA)
-```bash
-python scripts/generate_image.py "valentinamori, a woman smiling"
-```
+Nach dem Training generieren wir Bilder mit dem INT8-quantisierten Dev-Modell, um VRAM zu sparen:
 
-### Videos (Wan 2.2 i2v)
-Nutze das Wan2GP Backend (Port 8188) oder das lokale Skript:
 ```bash
-bash scripts/generate_video.sh --start-image output.png
+# Nutzt das lokale Flux.2-dev GGUF/Quanto Modell
+python scripts/generate_image.py --prompt "valentinamori in Barcelona" --strength 0.8
 ```
 
 ---
 
-## 🚨 Troubleshooting ROCm 7
-- **HIP Error**: Wenn das Training abstürzt, prüfe `rocm-smi`.
-- **Inkompatibilität**: Stelle sicher, dass `bitsandbytes` für ROCm korrekt installiert ist (in `install_simpletuner.sh` enthalten).
-
-
----
-
-## 🛠 7. Deep Technical Fixes (GPU-Force Details)
-
-Zusätzlich zu den Variablen wurden folgende Skript-Anpassungen vorgenommen:
-
-### A. Direct-to-GPU Sharding
-In `scripts/train_flux2_minimal.py` nutzen wir:
-```python
-# Lädt Shards direkt in den VRAM, um RAM-Doubling zu vermeiden
-shard_data = load_file(str(shard_path), device="cuda")
-```
-Dies ist kritisch für APUs, da der Linux-Kernel sonst versucht, den Speicher im RAM zu reservieren, bevor er ihn der GPU zuweist.
-
-### B. Bitsandbytes ROCm Link
-SimpleTuner benötigt 8-bit Optimizer. Falls dieser die GPU nicht findet:
-```bash
-# Manuelles Linking für ROCm 7
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/
-ln -s /usr/local/lib/python3.10/dist-packages/bitsandbytes/libbitsandbytes_rocm.so /usr/local/lib/python3.10/dist-packages/bitsandbytes/libbitsandbytes_cpu.so
-```
-*(Wird im `install_simpletuner.sh` Skript automatisch versucht).*
-
-### C. MMGP Tuning
-Für die Video-Generierung wurde in den Configs `perc_reserved_mem_max: 0.9` gesetzt. Dies verhindert das "Offloading" auf die CPU und hält das 14B Modell (Wan2.2) vollständig im 96GB/112GB VRAM-Bereich.
+## 🔍 Zusammenfassung der Tools
+- **SimpleTuner**: Trainer
+- **Flux.2-dev**: Das Basis-Modell
+- **ROCm 7.0**: Der Treiber-Stack
+- **Bitsandbytes-ROCm**: Für den 8-bit Optimizer

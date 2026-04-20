@@ -1,0 +1,10 @@
+[
+  {
+    "id": "flux-dataset",
+    "type": "image",
+    "instance_data_dir": "dataset",
+    "instance_prompt": "valentinamori",
+    "resolution": 1024,
+    "repeats": 10
+  }
+]
